@@ -78,6 +78,7 @@ private:
 	void endVisit(Continue const& _node) override;
 
 	void visitAssert(FunctionCall const& _funCall);
+	void internalFunctionCall(FunctionCall const& _funCall);
 	void unknownFunctionCall(FunctionCall const& _funCall);
 	//@}
 
@@ -96,6 +97,9 @@ private:
 	smt::SortPointer interfaceSort();
 	smt::SortPointer sort(FunctionDefinition const& _function);
 	smt::SortPointer sort(ASTNode const* _block);
+	// Sort for function calls. This is:
+	// (stateVarsSorts inputSorts outputSorts stateVarSorts)
+	smt::SortPointer summarySort(FunctionDefinition const& _function);
 	//@}
 
 	/// Predicate helpers.
@@ -111,6 +115,8 @@ private:
 
 	/// Creates a block for the given _node.
 	std::unique_ptr<smt::SymbolicFunctionVariable> createBlock(ASTNode const* _node, std::string const& _prefix = "");
+	// Creates a call block for the given function _node.
+	std::unique_ptr<smt::SymbolicFunctionVariable> createSummaryBlock(FunctionDefinition const* _node);
 
 	/// Creates a new error block to be used by an assertion.
 	/// Also registers the predicate.
@@ -134,6 +140,10 @@ private:
 	smt::Expression predicate(smt::SymbolicFunctionVariable const& _block);
 	/// @returns a predicate application over @param _arguments.
 	smt::Expression predicate(smt::SymbolicFunctionVariable const& _block, std::vector<smt::Expression> const& _arguments);
+	/// @returns the summary predicate for the called function.
+	smt::Expression predicate(FunctionCall const& _funCall);
+	/// @returns a predicate that defines a function summary.
+	smt::Expression summary(FunctionDefinition const* _function);
 	//@}
 
 	/// Solver related.
@@ -167,6 +177,9 @@ private:
 	/// Artificial Error predicate.
 	/// Single error block for all assertions.
 	std::unique_ptr<smt::SymbolicFunctionVariable> m_errorPredicate;
+
+	/// Function predicates.
+	std::map<FunctionDefinition const*, std::unique_ptr<smt::SymbolicFunctionVariable>> m_summaries;
 	//@}
 
 	/// Variables.
