@@ -50,7 +50,6 @@ public:
 
 	void check(ContractDefinition const& _contract);
 
-private:
 	/**
 	 * Comparator that compares
 	 *  - functions such that equality means that the functions override each other
@@ -66,6 +65,12 @@ private:
 
 	using FunctionMultiSet = std::multiset<FunctionDefinition const*, LessFunction>;
 	using ModifierMultiSet = std::multiset<ModifierDefinition const*, LessFunction>;
+
+	/// Returns all functions of bases that have not yet been overwritten.
+	/// May contain the same function multiple times when used with shared bases.
+	FunctionMultiSet const& inheritedFunctions(ContractDefinition const& _contract) const;
+	ModifierMultiSet const& inheritedModifiers(ContractDefinition const& _contract) const;
+private:
 
 	void checkIllegalOverrides(ContractDefinition const& _contract);
 	/// Performs various checks related to @a _overriding overriding @a _super like
@@ -101,11 +106,6 @@ private:
 		std::multiset<T const*, LessFunction> const& _funcSet,
 		T const& _function
 	);
-
-	/// Returns all functions of bases that have not yet been overwritten.
-	/// May contain the same function multiple times when used with shared bases.
-	FunctionMultiSet const& inheritedFunctions(ContractDefinition const& _contract) const;
-	ModifierMultiSet const& inheritedModifiers(ContractDefinition const& _contract) const;
 
 	langutil::ErrorReporter& m_errorReporter;
 
