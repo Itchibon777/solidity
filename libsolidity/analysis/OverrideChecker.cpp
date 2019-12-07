@@ -88,7 +88,8 @@ vector<ContractDefinition const*> resolveDirectBaseContracts(ContractDefinition 
 		Declaration const* baseDecl =
 			specifier->name().annotation().referencedDeclaration;
 		auto contract = dynamic_cast<ContractDefinition const*>(baseDecl);
-		solAssert(contract, "contract is null");
+		if (!contract)
+			return resolvedContracts;
 		resolvedContracts.emplace_back(contract);
 	}
 
