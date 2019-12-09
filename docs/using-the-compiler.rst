@@ -472,3 +472,13 @@ Error types
 11. ``CompilerError``: Invalid use of the compiler stack - this should be reported as an issue.
 12. ``FatalError``: Fatal error not processed correctly - this should be reported as an issue.
 13. ``Warning``: A warning, which didn't stop the compilation, but should be addressed if possible.
+
+
+.. _compiler-tools:
+
+Compiler tools
+**************
+
+solidity-upgrade
+----------------
+
