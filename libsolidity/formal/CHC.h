@@ -107,6 +107,8 @@ private:
 	/// @returns a new block of given _sort and _name.
 	std::unique_ptr<smt::SymbolicFunctionVariable> createSymbolicBlock(smt::SortPointer _sort, std::string const& _name);
 
+	/// Genesis predicate.
+	smt::Expression genesis() { return (*m_genesisPredicate)({}); }
 	/// Interface predicate over current variables.
 	smt::Expression interface();
 	/// Error predicate over current variables.
@@ -124,6 +126,8 @@ private:
 
 	void connectBlocks(smt::Expression const& _from, smt::Expression const& _to, smt::Expression const& _constraints = smt::Expression(true));
 
+	/// @returns the symbolic values of the initial state variables.
+	std::vector<smt::Expression> initialStateVariables();
 	/// @returns the current symbolic values of the current state variables.
 	std::vector<smt::Expression> currentStateVariables();
 
@@ -143,7 +147,7 @@ private:
 	/// @returns the summary predicate for the called function.
 	smt::Expression predicate(FunctionCall const& _funCall);
 	/// @returns a predicate that defines a function summary.
-	smt::Expression summary(FunctionDefinition const* _function);
+	smt::Expression summary(FunctionDefinition const& _function);
 	//@}
 
 	/// Solver related.
