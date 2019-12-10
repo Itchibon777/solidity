@@ -197,8 +197,7 @@ bool CHC::visit(FunctionDefinition const& _function)
 	auto functionPred = predicate(*functionEntryBlock, currentFunctionVariables());
 	auto bodyPred = predicate(*bodyBlock);
 
-	//connectBlocks(genesis(), functionPred);
-	addRule(functionPred, functionPred.name);
+	connectBlocks(genesis(), functionPred);
 	connectBlocks(functionPred, bodyPred);
 
 	setCurrentBlock(*bodyBlock);
@@ -238,16 +237,19 @@ void CHC::endVisit(FunctionDefinition const& _function)
 		}
 		else
 		{
-			connectBlocks(m_currentBlock, summary(_function));
-
-			auto stateExprs = initialStateVariables();
-			setCurrentBlock(*m_interfacePredicate, &stateExprs);
-
-			for (auto const* var: m_stateVariables)
-				m_context.variable(*var)->increaseIndex();
+			auto iface = interface();
 			auto sum = summary(_function);
 			connectBlocks(m_currentBlock, sum);
-			connectBlocks(sum, interface());
+
+			auto stateExprs = initialTxStateVariables();
+			setCurrentBlock(*m_interfacePredicate, &stateExprs);
+
+			if (_function.isPublic())
+			{
+				for (auto const* var: m_stateVariables)
+					m_context.addAssertion(m_context.variable(*var)->valueAtIndex(0) == currentValue(*var));
+				connectBlocks(m_currentBlock, iface, sum);
+			}
 		}
 		m_currentFunction = nullptr;
 	}
@@ -485,7 +487,7 @@ void CHC::visitAssert(FunctionCall const& _funCall)
 
 	smt::Expression assertNeg = !(m_context.expression(*args.front())->currentValue());
 	//connectBlocks(m_currentBlock, error(), currentPathConditions() && assertNeg);
-	connectBlocks(m_currentBlock, error(), currentPathConditions() && assertNeg && (*m_interfacePredicate)(initialStateVariables()));
+	connectBlocks(m_currentBlock, error(), currentPathConditions() && assertNeg && (*m_interfacePredicate)(initialTxStateVariables()));
 
 	m_verificationTargets.push_back(&_funCall);
 }
@@ -493,6 +495,7 @@ void CHC::visitAssert(FunctionCall const& _funCall)
 void CHC::internalFunctionCall(FunctionCall const& _funCall)
 {
 	m_context.addAssertion(predicate(_funCall));
+	//m_context.addAssertion(predicate(_funCall) && (*m_interfacePredicate)(initialStateVariables()));
 }
 
 void CHC::unknownFunctionCall(FunctionCall const&)
@@ -525,6 +528,15 @@ void CHC::eraseKnowledge()
 	m_context.resetVariables([&](VariableDeclaration const& _variable) { return _variable.hasReferenceOrMappingType(); });
 }
 
+void CHC::clearIndices(ContractDefinition const* _contract, FunctionDefinition const* _function)
+{
+	SMTEncoder::clearIndices(_contract, _function);
+	for (auto const* var: m_stateVariables)
+		/// SSA index 0 is reserved for state variables at the beginning
+		/// of the current transaction.
+		m_context.variable(*var)->increaseIndex();
+}
+	
 bool CHC::shouldVisit(ContractDefinition const& _contract) const
 {
 	if (
@@ -570,11 +582,20 @@ smt::SortPointer CHC::interfaceSort()
 	);
 }
 
-/// A function in the symbolic CFG requires two sets of state and input variables.
-/// One set of state variables and one set of input variables are immutable.
-/// Those are simply always passed onto the next blocks unchanged, such that
-/// the initial state of the transaction is always known.
-/// This will be used when reverts are taken into account.
+/// A function in the symbolic CFG requires:
+///
+/// 2 sets of state variables:
+/// - State variables at the beginning of the current transaction, immutable.
+/// - Current state variables.
+///    If the current function was called externally, these must equal set 1.
+///    If the current function was called internally, these might differ from set 1.
+///
+/// 2 sets of input variables:
+/// - Input variables at the beginning of the current function, immutable.
+/// - Current input variables.
+///    At the beginning of the function these must equal set 1.
+///
+/// 1 set of output variables
 smt::SortPointer CHC::sort(FunctionDefinition const& _function)
 {
 	auto boolSort = make_shared<smt::Sort>(smt::Kind::Bool);
@@ -608,6 +629,17 @@ smt::SortPointer CHC::sort(ASTNode const* _node)
 	);
 }
 
+/// A function summary predicate in the symbolic CFG requires:
+///
+/// 3 sets of state variables:
+/// - State variables at the beginning of the current transaction.
+/// - Current state variables when the function is called.
+///    If the current function was called externally, these must equal set 1.
+///    If the current function was called internally, these might differ from set 1.
+/// - State variables at the end of the function.
+///
+/// 1 set of input variables
+/// 1 set of output variables
 smt::SortPointer CHC::summarySort(FunctionDefinition const& _function)
 {
 	auto boolSort = make_shared<smt::Sort>(smt::Kind::Bool);
@@ -617,7 +649,7 @@ smt::SortPointer CHC::summarySort(FunctionDefinition const& _function)
 	for (auto const& var: _function.returnParameters())
 		outputSorts.push_back(smt::smtSortAbstractFunction(*var->type()));
 	return make_shared<smt::FunctionSort>(
-		m_stateSorts + inputSorts + m_stateSorts + outputSorts,
+		m_stateSorts + m_stateSorts + inputSorts + m_stateSorts + outputSorts,
 		boolSort
 	);
 }
@@ -653,7 +685,7 @@ smt::Expression CHC::error(unsigned _idx)
 
 smt::Expression CHC::summary(FunctionDefinition const& _function)
 {
-	vector<smt::Expression> args = initialStateVariables();
+	vector<smt::Expression> args = initialTxStateVariables() + initialInternalStateVariables();
 	for (auto const& var: _function.parameters())
 		args.push_back(m_context.variable(*var)->valueAtIndex(0));
 	args += currentStateVariables();
@@ -697,13 +729,23 @@ void CHC::connectBlocks(smt::Expression const& _from, smt::Expression const& _to
 	addRule(edge, _from.name + "_to_" + _to.name);
 }
 
-vector<smt::Expression> CHC::initialStateVariables()
+vector<smt::Expression> CHC::stateVariablesAtIndex(int _index)
 {
 	solAssert(m_currentContract, "");
 	vector<smt::Expression> exprs;
 	for (auto const& var: m_stateVariables)
-		exprs.push_back(m_context.variable(*var)->valueAtIndex(0));
+		exprs.push_back(m_context.variable(*var)->valueAtIndex(_index));
 	return exprs;
+}
+
+vector<smt::Expression> CHC::initialTxStateVariables()
+{
+	return stateVariablesAtIndex(0);
+}
+
+vector<smt::Expression> CHC::initialInternalStateVariables()
+{
+	return stateVariablesAtIndex(1);
 }
 
 vector<smt::Expression> CHC::currentStateVariables()
@@ -727,7 +769,7 @@ vector<smt::Expression> CHC::currentFunctionVariables()
 	vector<smt::Expression> returnExprs;
 	for (auto const& var: m_currentFunction->returnParameters())
 		returnExprs.push_back(m_context.variable(*var)->currentValue());
-	return initialStateVariables() + initInputExprs + currentStateVariables() + mutableInputExprs + returnExprs;
+	return initialTxStateVariables() + initInputExprs + currentStateVariables() + mutableInputExprs + returnExprs;
 }
 
 vector<smt::Expression> CHC::currentBlockVariables()
@@ -770,7 +812,7 @@ smt::Expression CHC::predicate(FunctionCall const& _funCall)
 	if (!function)
 		return smt::Expression(true);
 
-	vector<smt::Expression> args = currentStateVariables();
+	vector<smt::Expression> args = initialTxStateVariables() + currentStateVariables();
 	for (auto const& arg: _funCall.arguments())
 		args.push_back(expr(*arg));
 	for (auto const& var: m_stateVariables)

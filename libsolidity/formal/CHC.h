@@ -86,6 +86,7 @@ private:
 	//@{
 	void reset();
 	void eraseKnowledge();
+	void clearIndices(ContractDefinition const* _contract, FunctionDefinition const* _function = nullptr) override;
 	bool shouldVisit(ContractDefinition const& _contract) const;
 	bool shouldVisit(FunctionDefinition const& _function) const;
 	void setCurrentBlock(smt::SymbolicFunctionVariable const& _block, std::vector<smt::Expression> const* _arguments = nullptr);
@@ -126,8 +127,15 @@ private:
 
 	void connectBlocks(smt::Expression const& _from, smt::Expression const& _to, smt::Expression const& _constraints = smt::Expression(true));
 
-	/// @returns the symbolic values of the initial state variables.
-	std::vector<smt::Expression> initialStateVariables();
+	/// @returns the symbolic values of the state variables at the beginning
+	/// of the current transaction.
+	std::vector<smt::Expression> initialTxStateVariables();
+	/// @returns the symbolic values of the state variables at the beginning
+	/// of the current function.
+	std::vector<smt::Expression> initialInternalStateVariables();
+	/// @returns the symbolic values of the state variables with the given _index.
+	/// Used as helper for the two functions above.
+	std::vector<smt::Expression> stateVariablesAtIndex(int _index);
 	/// @returns the current symbolic values of the current state variables.
 	std::vector<smt::Expression> currentStateVariables();
 
