@@ -29,10 +29,11 @@
 
 #include <libdevcore/CommonData.h>
 
-using namespace yul;
+using namespace solidity;
+using namespace solidity::yul;
 using namespace std;
 
-pair<string, dev::bytes> EWasmObjectCompiler::compile(Object& _object, Dialect const& _dialect)
+pair<string, bytes> EWasmObjectCompiler::compile(Object& _object, Dialect const& _dialect)
 {
 	EWasmObjectCompiler compiler(_dialect);
 	wasm::Module module = compiler.run(_object);

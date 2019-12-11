@@ -34,19 +34,19 @@
 #include <memory>
 #include <string>
 
-namespace langutil
+namespace solidity::langutil
 {
 class Scanner;
 }
 
-namespace yul
+namespace solidity::yul
 {
 class AbstractAssembly;
 
 
 struct MachineAssemblyObject
 {
-	std::shared_ptr<dev::eth::LinkerObject> bytecode;
+	std::shared_ptr<evmasm::LinkerObject> bytecode;
 	std::string assembly;
 };
 
