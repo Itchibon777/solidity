@@ -129,12 +129,7 @@ private:
 
 	/// @returns the symbolic values of the state variables at the beginning
 	/// of the current transaction.
-	std::vector<smt::Expression> initialTxStateVariables();
-	/// @returns the symbolic values of the state variables at the beginning
-	/// of the current function.
-	std::vector<smt::Expression> initialInternalStateVariables();
-	/// @returns the symbolic values of the state variables with the given _index.
-	/// Used as helper for the two functions above.
+	std::vector<smt::Expression> initialStateVariables();
 	std::vector<smt::Expression> stateVariablesAtIndex(int _index);
 	/// @returns the current symbolic values of the current state variables.
 	std::vector<smt::Expression> currentStateVariables();
@@ -142,6 +137,7 @@ private:
 	/// @returns the current symbolic values of the current function's
 	/// input and output parameters.
 	std::vector<smt::Expression> currentFunctionVariables();
+	std::vector<smt::Expression> initialFunctionVariables();
 	/// @returns the same as currentFunctionVariables plus
 	/// local variables.
 	std::vector<smt::Expression> currentBlockVariables();
@@ -192,6 +188,9 @@ private:
 
 	/// Function predicates.
 	std::map<FunctionDefinition const*, std::unique_ptr<smt::SymbolicFunctionVariable>> m_summaries;
+
+	/// Function entry blocks.
+	std::map<FunctionDefinition const*, std::unique_ptr<smt::SymbolicFunctionVariable>> m_functionEntryBlock;
 	//@}
 
 	/// Variables.
@@ -229,7 +228,17 @@ private:
 	smt::SymbolicFunctionVariable const* m_breakDest = nullptr;
 	/// Block where a loop continue should go to.
 	smt::SymbolicFunctionVariable const* m_continueDest = nullptr;
+
+	/// Symbolic callstack counter.
+	smt::SymbolicIntVariable m_callCounter{
+		TypeProvider::uint256(),
+		TypeProvider::uint256(),
+		"callstackCounter",
+		m_context
+	};
 	//@}
+
+	std::vector<FunctionDefinition const*> m_resolvedFunctions;
 
 	/// CHC solver.
 	std::shared_ptr<smt::CHCSolverInterface> m_interface;
