@@ -231,7 +231,6 @@ bool CHC::visit(FunctionDefinition const& _function)
 	connectBlocks(genesis(), functionPred);
 
 	auto interfaceGuard = (*m_interfacePredicate)(initialStateVariables());
-	auto internalCallGuard = m_callCounter.currentValue() > 0;
 	auto stateEq = smt::Expression(true);
 	for (auto const* var: m_stateVariables)
 		stateEq = stateEq && (m_context.variable(*var)->valueAtIndex(0) == currentValue(*var));
@@ -245,12 +244,12 @@ bool CHC::visit(FunctionDefinition const& _function)
 	case Declaration::Visibility::External:
 	case Declaration::Visibility::Public:
 	{
-		m_context.addAssertion((interfaceGuard && stateEq && m_callCounter.currentValue() == 0) || (functionEntry && internalCallGuard));
+		m_context.addAssertion((interfaceGuard && stateEq) || functionEntry);
 		break;
 	}
 	case Declaration::Visibility::Internal:
 	case Declaration::Visibility::Private:
-		m_context.addAssertion(functionEntry && internalCallGuard);
+		m_context.addAssertion(functionEntry);
 		break;
 	default:
 		solAssert(false, "");
@@ -577,7 +576,6 @@ void CHC::reset()
 	m_unknownFunctionCallSeen = false;
 	m_breakDest = nullptr;
 	m_continueDest = nullptr;
-	m_callCounter.resetIndex();
 }
 
 void CHC::eraseKnowledge()
@@ -665,7 +663,7 @@ smt::SortPointer CHC::sort(FunctionDefinition const& _function)
 	for (auto const& var: _function.returnParameters())
 		outputSorts.push_back(smt::smtSortAbstractFunction(*var->type()));
 	return make_shared<smt::FunctionSort>(
-		vector<smt::SortPointer>{intSort} + m_stateSorts + m_stateSorts + inputSorts + m_stateSorts + inputSorts + outputSorts,
+		m_stateSorts + m_stateSorts + inputSorts + m_stateSorts + inputSorts + outputSorts,
 		boolSort
 	);
 }
@@ -698,7 +696,7 @@ smt::SortPointer CHC::summarySort(FunctionDefinition const& _function)
 	for (auto const& var: _function.returnParameters())
 		outputSorts.push_back(smt::smtSortAbstractFunction(*var->type()));
 	return make_shared<smt::FunctionSort>(
-		vector<smt::SortPointer>{intSort} + m_stateSorts + m_stateSorts + inputSorts + m_stateSorts + outputSorts,
+		m_stateSorts + m_stateSorts + inputSorts + m_stateSorts + outputSorts,
 		boolSort
 	);
 }
@@ -734,7 +732,7 @@ smt::Expression CHC::error(unsigned _idx)
 
 smt::Expression CHC::summary(FunctionDefinition const& _function)
 {
-	vector<smt::Expression> args{m_callCounter.currentValue()};
+	vector<smt::Expression> args;
 	args += initialStateVariables() + stateVariablesAtIndex(1);
 	for (auto const& var: _function.parameters())
 		args.push_back(m_context.variable(*var)->valueAtIndex(0));
@@ -814,8 +812,7 @@ vector<smt::Expression> CHC::initialFunctionVariables()
 	vector<smt::Expression> returnExprs;
 	for (auto const& var: m_currentFunction->returnParameters())
 		returnExprs.push_back(m_context.variable(*var)->currentValue());
-	return vector<smt::Expression>{m_callCounter.currentValue() - 1} +
-		initialStateVariables() +
+	return initialStateVariables() +
 		initialStateVariables() +
 		initInputExprs +
 		initialStateVariables() +
@@ -834,8 +831,7 @@ vector<smt::Expression> CHC::currentFunctionVariables()
 	vector<smt::Expression> returnExprs;
 	for (auto const& var: m_currentFunction->returnParameters())
 		returnExprs.push_back(m_context.variable(*var)->currentValue());
-	return vector<smt::Expression>{m_callCounter.currentValue()} +
-		initialStateVariables() +
+	return initialStateVariables() +
 		stateVariablesAtIndex(1) +
 		initInputExprs +
 		currentStateVariables() +
@@ -883,7 +879,7 @@ smt::Expression CHC::predicate(FunctionCall const& _funCall)
 	if (!function)
 		return smt::Expression(true);
 
-	vector<smt::Expression> args{m_callCounter.currentValue() + 1};
+	vector<smt::Expression> args;
 	args += initialStateVariables() + currentStateVariables();
 	for (auto const& arg: _funCall.arguments())
 		args.push_back(expr(*arg));

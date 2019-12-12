@@ -229,15 +229,6 @@ private:
 	/// Block where a loop continue should go to.
 	smt::SymbolicFunctionVariable const* m_continueDest = nullptr;
 
-	/// Symbolic callstack counter.
-	smt::SymbolicIntVariable m_callCounter{
-		TypeProvider::uint256(),
-		TypeProvider::uint256(),
-		"callstackCounter",
-		m_context
-	};
-	//@}
-
 	std::vector<FunctionDefinition const*> m_resolvedFunctions;
 
 	/// CHC solver.
