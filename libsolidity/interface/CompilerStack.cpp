@@ -1045,6 +1045,16 @@ void CompilerStack::compileContract(
 		solAssert(false, "Assembly exception for deployed bytecode");
 	}
 
+	// Throw an error if EIP-170 limits are exceeded.
+	if (
+		m_evmVersion >= langutil::EVMVersion::spuriousDragon() &&
+		compiledContract.object.bytecode.size() > 0x6000
+	)
+		m_errorReporter.warning(
+			"Contract code size exceeds 24576 bytes (introduced in Spurious Dragon). "
+			"This contract may not be deployable on mainnet."
+		);
+
 	_otherCompilers[compiledContract.contract] = compiler;
 }
 
