@@ -135,35 +135,6 @@ bool CHC::visit(ContractDefinition const& _contract)
 	auto stateExprs = currentStateVariables();
 	setCurrentBlock(*m_interfacePredicate, &stateExprs);
 
-	m_resolvedFunctions = _contract.definedFunctions();
-	for (auto const& base: _contract.annotation().linearizedBaseContracts)
-	{
-		// Check for function overrides.
-		for (auto const& baseFunction: base->definedFunctions())
-		{
-			if (baseFunction->isConstructor())
-				continue;
-			bool overridden = false;
-			for (auto const& function: m_resolvedFunctions)
-				if (
-					function->name() == baseFunction->name() &&
-					FunctionType(*function).asCallableFunction(false)->
-						hasEqualParameterTypes(*FunctionType(*baseFunction).asCallableFunction(false))
-				)
-				{
-					overridden = true;
-					break;
-				}
-			if (!overridden)
-				m_resolvedFunctions.push_back(baseFunction);
-		}
-	}
-	for (auto const* function: m_resolvedFunctions)
-		if (m_functionEntryBlock.count(function))
-			m_functionEntryBlock.at(function) = createBlock(function);
-		else
-			m_functionEntryBlock[function] = createBlock(function);
-
 	SMTEncoder::visit(_contract);
 	return false;
 }
@@ -189,12 +160,12 @@ void CHC::endVisit(ContractDefinition const& _contract)
 
 	connectBlocks(m_currentBlock, interface());
 
-	for (unsigned i = 0; i < m_verificationTargets.size(); ++i)
+	//for (unsigned i = 0; i < m_verificationTargets.size(); ++i)
+	for (unsigned i = 0; i < m_functionErrors.size(); ++i)
 	{
-		auto const& target = m_verificationTargets.at(i);
+		auto const* target = m_functionErrors.at(i);//m_verificationTargets.at(i);
 		auto errorAppl = error(i + 1);
-		if (query(errorAppl, target->location()))
-			m_safeAssertions.insert(target);
+		query(errorAppl, target->location());
 	}
 
 	SMTEncoder::endVisit(_contract);
@@ -220,40 +191,16 @@ bool CHC::visit(FunctionDefinition const& _function)
 
 	initFunction(_function);
 
-	//auto functionEntryBlock = createBlock(m_currentFunction);
-	//m_functionEntryBlock.at(m_currentFunction) = createBlock(m_currentFunction);
+	auto functionEntryBlock = createBlock(m_currentFunction);
 	auto bodyBlock = createBlock(&m_currentFunction->body());
 
-	solAssert(m_functionEntryBlock.at(m_currentFunction), "");
-	auto functionPred = predicate(*m_functionEntryBlock.at(m_currentFunction), currentFunctionVariables());
+	auto functionPred = predicate(*functionEntryBlock, currentFunctionVariables());
 	auto bodyPred = predicate(*bodyBlock);
 
 	connectBlocks(genesis(), functionPred);
-
-	auto interfaceGuard = (*m_interfacePredicate)(initialStateVariables());
-	auto stateEq = smt::Expression(true);
+	m_context.addAssertion(m_assertions.currentValue());
 	for (auto const* var: m_stateVariables)
-		stateEq = stateEq && (m_context.variable(*var)->valueAtIndex(0) == currentValue(*var));
-	auto functionEntry = smt::Expression(false);
-	for (auto const* function: m_resolvedFunctions)
-		if (function->isPublic() && function != &_function)
-			functionEntry = functionEntry || predicate(*m_functionEntryBlock.at(function), initialFunctionVariables());
-
-	switch (_function.visibility())
-	{
-	case Declaration::Visibility::External:
-	case Declaration::Visibility::Public:
-	{
-		m_context.addAssertion((interfaceGuard && stateEq) || functionEntry);
-		break;
-	}
-	case Declaration::Visibility::Internal:
-	case Declaration::Visibility::Private:
-		m_context.addAssertion(functionEntry);
-		break;
-	default:
-		solAssert(false, "");
-	}
+		m_context.addAssertion(m_context.variable(*var)->valueAtIndex(0) == currentValue(*var));
 	connectBlocks(functionPred, bodyPred);
 
 	setCurrentBlock(*bodyBlock);
@@ -302,9 +249,10 @@ void CHC::endVisit(FunctionDefinition const& _function)
 
 			if (_function.isPublic())
 			{
-				for (auto const* var: m_stateVariables)
-					m_context.addAssertion(m_context.variable(*var)->valueAtIndex(0) == currentValue(*var));
-				connectBlocks(m_currentBlock, iface, sum);
+				createErrorBlock();
+				connectBlocks(m_currentBlock, error(), sum && !m_assertions.currentValue());
+				connectBlocks(m_currentBlock, iface, sum && m_assertions.currentValue());
+				m_functionErrors.push_back(&_function);
 			}
 		}
 		m_currentFunction = nullptr;
@@ -539,6 +487,11 @@ void CHC::visitAssert(FunctionCall const& _funCall)
 	solAssert(args.size() == 1, "");
 	solAssert(args.front()->annotation().type->category() == Type::Category::Bool, "");
 
+	auto newTarget = m_assertions.currentValue() && currentPathConditions() && m_context.expression(*args.front())->currentValue();
+	m_assertions.increaseIndex();
+	m_context.addAssertion(m_assertions.currentValue() == newTarget);
+
+	/*
 	createErrorBlock();
 
 	smt::Expression assertNeg = !(m_context.expression(*args.front())->currentValue());
@@ -546,12 +499,15 @@ void CHC::visitAssert(FunctionCall const& _funCall)
 	//connectBlocks(m_currentBlock, error(), currentPathConditions() && assertNeg && (*m_interfacePredicate)(initialStateVariables()));
 
 	m_verificationTargets.push_back(&_funCall);
+	*/
 }
 
 void CHC::internalFunctionCall(FunctionCall const& _funCall)
 {
 	m_context.addAssertion(predicate(_funCall));
-	//m_context.addAssertion(predicate(_funCall) && (*m_interfacePredicate)(initialStateVariables()));
+	auto newTarget = m_assertions.currentValue() && m_assertions.valueAtIndex(m_assertions.index() - 1);
+	m_assertions.increaseIndex();
+	m_context.addAssertion(m_assertions.currentValue() == newTarget);
 }
 
 void CHC::unknownFunctionCall(FunctionCall const&)
@@ -572,10 +528,12 @@ void CHC::reset()
 	m_stateVariables.clear();
 	m_verificationTargets.clear();
 	m_safeAssertions.clear();
+	m_functionErrors.clear();
 	m_summaries.clear();
 	m_unknownFunctionCallSeen = false;
 	m_breakDest = nullptr;
 	m_continueDest = nullptr;
+	m_assertions.resetIndex();
 }
 
 void CHC::eraseKnowledge()
@@ -663,7 +621,7 @@ smt::SortPointer CHC::sort(FunctionDefinition const& _function)
 	for (auto const& var: _function.returnParameters())
 		outputSorts.push_back(smt::smtSortAbstractFunction(*var->type()));
 	return make_shared<smt::FunctionSort>(
-		m_stateSorts + m_stateSorts + inputSorts + m_stateSorts + inputSorts + outputSorts,
+		vector<smt::SortPointer>{boolSort} + m_stateSorts + inputSorts + m_stateSorts + inputSorts + outputSorts,
 		boolSort
 	);
 }
@@ -696,7 +654,7 @@ smt::SortPointer CHC::summarySort(FunctionDefinition const& _function)
 	for (auto const& var: _function.returnParameters())
 		outputSorts.push_back(smt::smtSortAbstractFunction(*var->type()));
 	return make_shared<smt::FunctionSort>(
-		m_stateSorts + m_stateSorts + inputSorts + m_stateSorts + outputSorts,
+		vector<smt::SortPointer>{boolSort} + m_stateSorts + inputSorts + m_stateSorts + outputSorts,
 		boolSort
 	);
 }
@@ -732,8 +690,8 @@ smt::Expression CHC::error(unsigned _idx)
 
 smt::Expression CHC::summary(FunctionDefinition const& _function)
 {
-	vector<smt::Expression> args;
-	args += initialStateVariables() + stateVariablesAtIndex(1);
+	vector<smt::Expression> args{m_assertions.currentValue()};
+	args += initialStateVariables();
 	for (auto const& var: _function.parameters())
 		args.push_back(m_context.variable(*var)->valueAtIndex(0));
 	args += currentStateVariables();
@@ -800,25 +758,6 @@ vector<smt::Expression> CHC::currentStateVariables()
 	return exprs;
 }
 
-vector<smt::Expression> CHC::initialFunctionVariables()
-{
-	vector<smt::Expression> initInputExprs;
-	vector<smt::Expression> mutableInputExprs;
-	for (auto const& var: m_currentFunction->parameters())
-	{
-		initInputExprs.push_back(m_context.variable(*var)->valueAtIndex(0));
-		mutableInputExprs.push_back(m_context.variable(*var)->currentValue());
-	}
-	vector<smt::Expression> returnExprs;
-	for (auto const& var: m_currentFunction->returnParameters())
-		returnExprs.push_back(m_context.variable(*var)->currentValue());
-	return initialStateVariables() +
-		initialStateVariables() +
-		initInputExprs +
-		initialStateVariables() +
-		initInputExprs +
-		returnExprs;
-}
 vector<smt::Expression> CHC::currentFunctionVariables()
 {
 	vector<smt::Expression> initInputExprs;
@@ -831,8 +770,8 @@ vector<smt::Expression> CHC::currentFunctionVariables()
 	vector<smt::Expression> returnExprs;
 	for (auto const& var: m_currentFunction->returnParameters())
 		returnExprs.push_back(m_context.variable(*var)->currentValue());
-	return initialStateVariables() +
-		stateVariablesAtIndex(1) +
+	return vector<smt::Expression>{m_assertions.currentValue()} +
+		initialStateVariables() +
 		initInputExprs +
 		currentStateVariables() +
 		mutableInputExprs +
@@ -879,8 +818,9 @@ smt::Expression CHC::predicate(FunctionCall const& _funCall)
 	if (!function)
 		return smt::Expression(true);
 
-	vector<smt::Expression> args;
-	args += initialStateVariables() + currentStateVariables();
+	m_assertions.increaseIndex();
+	vector<smt::Expression> args{m_assertions.currentValue()};
+	args += currentStateVariables();
 	for (auto const& arg: _funCall.arguments())
 		args.push_back(expr(*arg));
 	for (auto const& var: m_stateVariables)

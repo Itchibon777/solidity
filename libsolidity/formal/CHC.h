@@ -137,7 +137,6 @@ private:
 	/// @returns the current symbolic values of the current function's
 	/// input and output parameters.
 	std::vector<smt::Expression> currentFunctionVariables();
-	std::vector<smt::Expression> initialFunctionVariables();
 	/// @returns the same as currentFunctionVariables plus
 	/// local variables.
 	std::vector<smt::Expression> currentBlockVariables();
@@ -189,8 +188,11 @@ private:
 	/// Function predicates.
 	std::map<FunctionDefinition const*, std::unique_ptr<smt::SymbolicFunctionVariable>> m_summaries;
 
-	/// Function entry blocks.
-	std::map<FunctionDefinition const*, std::unique_ptr<smt::SymbolicFunctionVariable>> m_functionEntryBlock;
+	smt::SymbolicBoolVariable m_assertions{
+		TypeProvider::boolean(),
+		"assertions",
+		m_context
+	};
 	//@}
 
 	/// Variables.
@@ -209,6 +211,8 @@ private:
 
 	/// Assertions proven safe.
 	std::set<Expression const*> m_safeAssertions;
+	
+	std::vector<FunctionDefinition const*> m_functionErrors;
 	//@}
 
 	/// Control-flow.
@@ -228,8 +232,6 @@ private:
 	smt::SymbolicFunctionVariable const* m_breakDest = nullptr;
 	/// Block where a loop continue should go to.
 	smt::SymbolicFunctionVariable const* m_continueDest = nullptr;
-
-	std::vector<FunctionDefinition const*> m_resolvedFunctions;
 
 	/// CHC solver.
 	std::shared_ptr<smt::CHCSolverInterface> m_interface;
