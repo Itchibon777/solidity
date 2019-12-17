@@ -38,13 +38,18 @@ namespace solidity
  * This module performs analyses on the AST that are done after type checking and assignments of types:
  *  - whether there are circular references in constant state variables
  *  - whether override specifiers are actually contracts
- * @TODO factor out each use-case into an individual class (but do the traversal only once)
+ *
+ *  When adding a new checker, make sure a visitor that forwards calls that your
+ *  checker uses exists in PostTypeChecker. Add missing ones.
+ *
+ *  The return value for the visit function of a checker is ignored, all nodes
+ *  will always be visited.
  */
 class PostTypeChecker: private ASTConstVisitor
 {
 public:
 	/// @param _errorReporter provides the error logging functionality.
-	PostTypeChecker(langutil::ErrorReporter& _errorReporter): m_errorReporter(_errorReporter) {}
+	PostTypeChecker(langutil::ErrorReporter& _errorReporter);
 
 	bool check(ASTNode const& _astRoot);
 
@@ -61,13 +66,9 @@ private:
 
 	bool visit(Identifier const& _identifier) override;
 
-	VariableDeclaration const* findCycle(VariableDeclaration const& _startingFrom);
-
 	langutil::ErrorReporter& m_errorReporter;
 
-	VariableDeclaration const* m_currentConstVariable = nullptr;
-	std::vector<VariableDeclaration const*> m_constVariables; ///< Required for determinism.
-	std::map<VariableDeclaration const*, std::set<VariableDeclaration const*>> m_constVariableDependencies;
+	std::vector<std::shared_ptr<ASTConstVisitor>> m_checkers;
 };
 
 }

@@ -31,6 +31,133 @@ using namespace dev;
 using namespace langutil;
 using namespace dev::solidity;
 
+namespace
+{
+struct ConstStateVarCircularReferenceChecker: public ASTConstVisitor
+{
+	ConstStateVarCircularReferenceChecker(ErrorReporter& _errorReporter):
+		m_errorReporter(_errorReporter) {}
+
+	bool visit(ContractDefinition const&) override
+	{
+		solAssert(!m_currentConstVariable, "");
+		solAssert(m_constVariableDependencies.empty(), "");
+		return true;
+	}
+
+	void endVisit(ContractDefinition const&) override
+	{
+		solAssert(!m_currentConstVariable, "");
+		for (auto declaration: m_constVariables)
+			if (auto identifier = findCycle(*declaration))
+				m_errorReporter.typeError(
+					declaration->location(),
+					"The value of the constant " + declaration->name() +
+					" has a cyclic dependency via " + identifier->name() + "."
+				);
+
+		m_constVariables.clear();
+		m_constVariableDependencies.clear();
+	}
+
+	bool visit(VariableDeclaration const& _variable) override
+	{
+		solAssert(!m_currentConstVariable, "");
+		if (_variable.isConstant())
+		{
+			m_currentConstVariable = &_variable;
+			m_constVariables.push_back(&_variable);
+		}
+		return true;
+	}
+
+	void endVisit(VariableDeclaration const& _variable) override
+	{
+		if (_variable.isConstant())
+		{
+			solAssert(m_currentConstVariable == &_variable, "");
+			m_currentConstVariable = nullptr;
+		}
+	}
+
+	bool visit(Identifier const& _identifier) override
+	{
+		if (m_currentConstVariable)
+			if (auto var = dynamic_cast<VariableDeclaration const*>(_identifier.annotation().referencedDeclaration))
+				if (var->isConstant())
+					m_constVariableDependencies[m_currentConstVariable].insert(var);
+		return true;
+	}
+
+	VariableDeclaration const* findCycle(VariableDeclaration const& _startingFrom)
+	{
+		auto visitor = [&](VariableDeclaration const& _variable, CycleDetector<VariableDeclaration>& _cycleDetector, size_t _depth)
+		{
+			if (_depth >= 256)
+				m_errorReporter.fatalDeclarationError(_variable.location(), "Variable definition exhausting cyclic dependency validator.");
+
+			// Iterating through the dependencies needs to be deterministic and thus cannot
+			// depend on the memory layout.
+			// Because of that, we sort by AST node id.
+			vector<VariableDeclaration const*> dependencies(
+				m_constVariableDependencies[&_variable].begin(),
+				m_constVariableDependencies[&_variable].end()
+			);
+			sort(dependencies.begin(), dependencies.end(), [](VariableDeclaration const* _a, VariableDeclaration const* _b) -> bool
+			{
+				return _a->id() < _b->id();
+			});
+			for (auto v: dependencies)
+				if (_cycleDetector.run(*v))
+					return;
+		};
+		return CycleDetector<VariableDeclaration>(visitor).run(_startingFrom);
+	}
+
+private:
+	VariableDeclaration const* m_currentConstVariable = nullptr;
+	std::map<VariableDeclaration const*, std::set<VariableDeclaration const*>> m_constVariableDependencies;
+	std::vector<VariableDeclaration const*> m_constVariables; ///< Required for determinism.
+
+	ErrorReporter& m_errorReporter;
+};
+
+struct OverrideSpecifierChecker: public ASTConstVisitor
+{
+	OverrideSpecifierChecker(ErrorReporter& _errorReporter):
+		m_errorReporter(_errorReporter) {}
+
+	void endVisit(OverrideSpecifier const& _overrideSpecifier) override
+	{
+		for (ASTPointer<UserDefinedTypeName> const& override: _overrideSpecifier.overrides())
+		{
+			Declaration const* decl  = override->annotation().referencedDeclaration;
+			solAssert(decl, "Expected declaration to be resolved.");
+
+			if (dynamic_cast<ContractDefinition const*>(decl))
+				continue;
+
+			TypeType const* actualTypeType = dynamic_cast<TypeType const*>(decl->type());
+
+			m_errorReporter.typeError(
+				override->location(),
+				"Expected contract but got " +
+				actualTypeType->actualType()->toString(true) +
+				"."
+			);
+		}
+	}
+private:
+	ErrorReporter& m_errorReporter;
+};
+}
+
+PostTypeChecker::PostTypeChecker(langutil::ErrorReporter& _errorReporter): m_errorReporter(_errorReporter)
+{
+	m_checkers.push_back(make_shared<ConstStateVarCircularReferenceChecker>(m_errorReporter));
+	m_checkers.push_back(make_shared<OverrideSpecifierChecker>(m_errorReporter));
+
+}
 
 bool PostTypeChecker::check(ASTNode const& _astRoot)
 {
@@ -38,99 +165,45 @@ bool PostTypeChecker::check(ASTNode const& _astRoot)
 	return Error::containsOnlyWarnings(m_errorReporter.errors());
 }
 
-bool PostTypeChecker::visit(ContractDefinition const&)
+bool PostTypeChecker::visit(ContractDefinition const& _contractDefinition)
 {
-	solAssert(!m_currentConstVariable, "");
-	solAssert(m_constVariableDependencies.empty(), "");
+	for (auto& checker: m_checkers)
+		checker->visit(_contractDefinition);
+
 	return true;
 }
 
-void PostTypeChecker::endVisit(ContractDefinition const&)
+void PostTypeChecker::endVisit(ContractDefinition const& _contractDefinition)
 {
-	solAssert(!m_currentConstVariable, "");
-	for (auto declaration: m_constVariables)
-		if (auto identifier = findCycle(*declaration))
-			m_errorReporter.typeError(
-				declaration->location(),
-				"The value of the constant " + declaration->name() +
-				" has a cyclic dependency via " + identifier->name() + "."
-			);
-
-	m_constVariables.clear();
-	m_constVariableDependencies.clear();
+	for (auto& checker: m_checkers)
+		checker->endVisit(_contractDefinition);
 }
 
 void PostTypeChecker::endVisit(OverrideSpecifier const& _overrideSpecifier)
 {
-	for (ASTPointer<UserDefinedTypeName> const& override: _overrideSpecifier.overrides())
-	{
-		Declaration const* decl  = override->annotation().referencedDeclaration;
-		solAssert(decl, "Expected declaration to be resolved.");
-
-		if (dynamic_cast<ContractDefinition const*>(decl))
-			continue;
-
-		TypeType const* actualTypeType = dynamic_cast<TypeType const*>(decl->type());
-
-		m_errorReporter.typeError(
-			override->location(),
-			"Expected contract but got " +
-			actualTypeType->actualType()->toString(true) +
-			"."
-		);
-	}
+	for (auto& checker: m_checkers)
+		checker->endVisit(_overrideSpecifier);
 }
 
 bool PostTypeChecker::visit(VariableDeclaration const& _variable)
 {
-	solAssert(!m_currentConstVariable, "");
-	if (_variable.isConstant())
-	{
-		m_currentConstVariable = &_variable;
-		m_constVariables.push_back(&_variable);
-	}
+	for (auto& checker: m_checkers)
+		checker->visit(_variable);
+
 	return true;
 }
 
 void PostTypeChecker::endVisit(VariableDeclaration const& _variable)
 {
-	if (_variable.isConstant())
-	{
-		solAssert(m_currentConstVariable == &_variable, "");
-		m_currentConstVariable = nullptr;
-	}
+	for (auto& checker: m_checkers)
+		checker->endVisit(_variable);
 }
 
 bool PostTypeChecker::visit(Identifier const& _identifier)
 {
-	if (m_currentConstVariable)
-		if (auto var = dynamic_cast<VariableDeclaration const*>(_identifier.annotation().referencedDeclaration))
-			if (var->isConstant())
-				m_constVariableDependencies[m_currentConstVariable].insert(var);
+	for (auto& checker: m_checkers)
+		checker->visit(_identifier);
+
 	return true;
 }
 
-VariableDeclaration const* PostTypeChecker::findCycle(VariableDeclaration const& _startingFrom)
-{
-	auto visitor = [&](VariableDeclaration const& _variable, CycleDetector<VariableDeclaration>& _cycleDetector, size_t _depth)
-	{
-		if (_depth >= 256)
-			m_errorReporter.fatalDeclarationError(_variable.location(), "Variable definition exhausting cyclic dependency validator.");
-
-		// Iterating through the dependencies needs to be deterministic and thus cannot
-		// depend on the memory layout.
-		// Because of that, we sort by AST node id.
-		vector<VariableDeclaration const*> dependencies(
-			m_constVariableDependencies[&_variable].begin(),
-			m_constVariableDependencies[&_variable].end()
-		);
-		sort(dependencies.begin(), dependencies.end(), [](VariableDeclaration const* _a, VariableDeclaration const* _b) -> bool
-		{
-			return _a->id() < _b->id();
-		});
-		for (auto v: dependencies)
-			if (_cycleDetector.run(*v))
-				return;
-	};
-	return CycleDetector<VariableDeclaration>(visitor).run(_startingFrom);
-}
